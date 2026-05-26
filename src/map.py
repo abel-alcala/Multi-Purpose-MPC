@@ -110,7 +110,7 @@ class Map:
         self.data = np.where(self.data >= self.threshold_occupied, 1, 0)
 
         # Remove small holes in map corresponding to spurious measurements
-        self.data = remove_small_holes(self.data, area_threshold=5,
+        self.data = remove_small_holes(self.data.astype(bool), max_size=5,
                                        connectivity=8).astype(np.int8)
 
     def add_obstacles(self, obstacles):

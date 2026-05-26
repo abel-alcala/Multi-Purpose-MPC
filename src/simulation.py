@@ -160,4 +160,4 @@ if __name__ == '__main__':
         plt.title('MPC Simulation: v(t): {:.2f}, delta(t): {:.2f}, Duration: '
                   '{:.2f} s'.format(u[0], u[1], t))
         plt.axis('off')
-        plt.pause(0.001)
+        plt.pause(0.1)

@@ -149,10 +149,12 @@ class MPC:
         # Set cost matrices
         P = sparse.block_diag([sparse.kron(sparse.eye(self.N), self.Q), self.QN,
              sparse.kron(sparse.eye(self.N), self.R)], format='csc')
+        q_diag = self.Q.diagonal() if sparse.issparse(self.Q) else np.diag(self.Q)
+        r_diag = self.R.diagonal() if sparse.issparse(self.R) else np.diag(self.R)
         q = np.hstack(
-            [-np.tile(np.diag(self.Q.A), self.N) * xr[:-self.nx],
+            [-np.tile(q_diag, self.N) * xr[:-self.nx],
              -self.QN.dot(xr[-self.nx:]),
-             -np.tile(np.diag(self.R.A), self.N) * ur])
+             -np.tile(r_diag, self.N) * ur])
 
         # Initialize optimizer
         self.optimizer = osqp.OSQP()
@@ -255,4 +257,3 @@ class MPC:
         if self.current_prediction is not None:
             plt.scatter(self.current_prediction[0], self.current_prediction[1],
                     c=PREDICTION, s=30)
-
