@@ -13,3 +13,4 @@ __pycache__/spatial_bicycle_models.cpython-37.pyc
 *.DS_Store
 .gitattributes
 .idea
+__pycache__/
