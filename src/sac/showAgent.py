@@ -56,6 +56,7 @@ def runEpisode(checkpointFile, pause=0.03, useObstacles=True):
     print(f"steps {steps} | return {totalReturn:.1f} | {outcome}")
 
     plt.pause = origPause
+    plt.show()
     env.close()
 
 

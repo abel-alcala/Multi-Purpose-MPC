@@ -9,7 +9,7 @@ outputPath = os.path.join(_sacDir, 'trainingPlots.png')
 
 
 # Reads the checkpoint metrics and plots the four training curves
-def main():
+def main(show=True):
     if not os.path.exists(metricsPath):
         print(f"no metrics file at {metricsPath}, run evaluateCheckpoints.py first")
         return
@@ -81,7 +81,10 @@ def main():
     plt.tight_layout()
     plt.savefig(outputPath, dpi=150, bbox_inches='tight')
     print(f"plot saved to {outputPath}")
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close('all')
 
 
 if __name__ == '__main__':

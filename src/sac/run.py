@@ -29,11 +29,11 @@ def main():
 
     useObstacles = not args.no_obstacles
 
-    # train, evaluate every checkpoint, then plot the curves
+    # train, evaluate every checkpoint, then save the curves (without blocking on them)
     if not args.viz_only:
         train.train(useObstacles)
         evaluateCheckpoints.main(useObstacles)
-        plotTraining.main()
+        plotTraining.main(show=False)
 
     # watch the trained agent drive the track
     pause = 0.1 if args.slow else 0.03

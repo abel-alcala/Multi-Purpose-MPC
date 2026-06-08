@@ -88,8 +88,9 @@ class TrackingEnv:
         self.referencePath.compute_speed_profile(
             {'a_min': -0.1, 'a_max': 0.5, 'v_min': 0.0, 'v_max': maxVelocity, 'ay_max': 4.0})
 
+        self._obstacles = []
         if self._useObstacles:
-            self._map.add_obstacles([
+            self._obstacles = [
                 Obstacle(cx=0.0, cy=0.0, radius=0.05),
                 Obstacle(cx=-0.8, cy=-0.5, radius=0.08),
                 Obstacle(cx=-0.7, cy=-1.5, radius=0.05),
@@ -98,7 +99,8 @@ class TrackingEnv:
                 Obstacle(cx=0.78, cy=-1.47, radius=0.05),
                 Obstacle(cx=0.73, cy=-0.9, radius=0.07),
                 Obstacle(cx=1.2, cy=0.0, radius=0.08),
-                Obstacle(cx=0.67, cy=-0.05, radius=0.06)])
+                Obstacle(cx=0.67, cy=-0.05, radius=0.06)]
+            self._map.add_obstacles(self._obstacles)
 
         # Define action and observation spaces
         self.action_space = spaces.Box(
@@ -143,17 +145,19 @@ class TrackingEnv:
         leftBound = self.car.current_waypoint.lb
         rightBound = self.car.current_waypoint.ub
 
+        # collision is either leaving the track or hitting one of the obstacles
         offTrack = bool(lateralError < leftBound or lateralError > rightBound)
+        collision = offTrack or self._hitObstacle()
         obs = self.getObs()
-        reward = self.computeReward(velocity, lateralError, leftBound, rightBound)
-        terminated = offTrack or lapComplete
+        reward = self.computeReward(velocity, lateralError, leftBound, rightBound, collision)
+        terminated = collision or lapComplete
         truncated = self._stepCount >= self.maxSteps
 
         info = {
             's': self.car.s, # distance traveled along path
             'wp_id': self.car.wp_id, # current waypoint index
             'e_y': lateralError, # lateral deviation from centerline
-            'collision': offTrack,
+            'collision': collision,
             'lap_complete': lapComplete
         }
 
@@ -172,6 +176,18 @@ class TrackingEnv:
 
     def close(self):
         plt.close('all')
+
+    # True if the car body overlaps any obstacle disk (car treated as a disk of half its width)
+    def _hitObstacle(self):
+        if not self._obstacles:
+            return False
+        carX = self.car.temporal_state.x
+        carY = self.car.temporal_state.y
+        halfCar = self.carWidth / 2.0
+        for obs in self._obstacles:
+            if np.hypot(carX - obs.cx, carY - obs.cy) < obs.radius + halfCar:
+                return True
+        return False
 
     def getObs(self):
         lateralError = self.car.spatial_state.e_y
@@ -192,7 +208,6 @@ class TrackingEnv:
 
         return np.array([lateralError, headingError, kappaAhead, self._lastVelocity, clearance], dtype=np.float32)
 
-    # Stay near center (-|lateralError|), rewards going fast (+0.1*velocity) and penalizes going off track (-10)
-    def computeReward(self, velocity, lateralError, leftBound, rightBound):
-        offTrack = (lateralError < leftBound) or (lateralError > rightBound)
-        return -abs(lateralError) - 10.0 * float(offTrack) + 0.1 * velocity
+    # Stay near center (-|lateralError|), rewards going fast (+0.1*velocity) and penalizes collisions (-10)
+    def computeReward(self, velocity, lateralError, leftBound, rightBound, collision):
+        return -abs(lateralError) - 10.0 * float(collision) + 0.1 * velocity
