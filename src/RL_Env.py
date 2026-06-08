@@ -49,12 +49,14 @@ maxDelta = 0.66  # steering angle clipped to [-0.66, 0.66] rad
 class TrackingEnv:
     metadata = {'render_modes': ['human']}
 
-    def __init__(self, simMode='Sim_Track', nWaypointsAhead=5, maxSteps=2000, renderMode=None):
+    def __init__(self, simMode='Sim_Track', nWaypointsAhead=5, maxSteps=2000, renderMode=None,
+                 useObstacles=None):
         if simMode not in simSettings:
             raise ValueError(f"simMode must be 'Sim_Track' or 'Real_Track'")
 
         config = simSettings[simMode]
         self._config = config
+        self._useObstacles = config.get('useObstacles') if useObstacles is None else useObstacles
         self.simMode = simMode
         self.nWaypointsAhead = nWaypointsAhead
         self.maxSteps = maxSteps
@@ -86,7 +88,7 @@ class TrackingEnv:
         self.referencePath.compute_speed_profile(
             {'a_min': -0.1, 'a_max': 0.5, 'v_min': 0.0, 'v_max': maxVelocity, 'ay_max': 4.0})
 
-        if config.get('useObstacles'):
+        if self._useObstacles:
             self._map.add_obstacles([
                 Obstacle(cx=0.0, cy=0.0, radius=0.05),
                 Obstacle(cx=-0.8, cy=-0.5, radius=0.08),
@@ -127,9 +129,13 @@ class TrackingEnv:
         steeringAngle = float(np.clip(action[1], -self.deltaMax, self.deltaMax))
         self.car.drive(np.array([velocity, steeringAngle]))
 
-        # since drive() doesn't update the path-frame state  must do it manually
-        self.car.get_current_waypoint()
-        self.car.spatial_state = self.car.t2s(self.car.current_waypoint, self.car.temporal_state)
+        lapComplete = bool(self.car.s >= self.referencePath.length)
+
+        # get_current_waypoint indexes into the waypoint array via s; skip if lap is done
+        # to avoid an out-of-bounds access when s has passed the end of the track.
+        if not lapComplete:
+            self.car.get_current_waypoint()
+            self.car.spatial_state = self.car.t2s(self.car.current_waypoint, self.car.temporal_state)
         self._lastVelocity = velocity
         self._stepCount += 1
 
@@ -138,7 +144,6 @@ class TrackingEnv:
         rightBound = self.car.current_waypoint.ub
 
         offTrack = bool(lateralError < leftBound or lateralError > rightBound)
-        lapComplete = bool(self.car.s >= self.referencePath.length)
         obs = self.getObs()
         reward = self.computeReward(velocity, lateralError, leftBound, rightBound)
         terminated = offTrack or lapComplete
