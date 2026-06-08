@@ -78,13 +78,14 @@ def main(show=True):
     ax.grid(True, alpha=0.3)
     ax.xaxis.set_major_formatter(plt.FuncFormatter(fmt))
 
-    plt.tight_layout()
-    plt.savefig(outputPath, dpi=150, bbox_inches='tight')
+    fig.tight_layout()
+    fig.savefig(outputPath, dpi=150, bbox_inches='tight')
     print(f"plot saved to {outputPath}")
+    # close only our own figure so we never disturb the rollout's matplotlib state
     if show:
         plt.show()
     else:
-        plt.close('all')
+        plt.close(fig)
 
 
 if __name__ == '__main__':
