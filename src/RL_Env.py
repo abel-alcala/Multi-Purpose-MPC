@@ -206,7 +206,13 @@ class TrackingEnv:
         rightBound = self.car.current_waypoint.ub
         clearance = min(rightBound - lateralError, lateralError - leftBound)  # distance to the closer boundary
 
-        return np.array([lateralError, headingError, kappaAhead, self._lastVelocity, clearance], dtype=np.float32)
+        return np.array([
+    lateralError,   # how far left/right from centerline
+    headingError,   # how misaligned with path tangent
+    kappaAhead,     # upcoming path curvature
+    self._lastVelocity,   # previous commanded speed
+    clearance,      # distance to nearest track boundary
+], dtype=np.float32)
 
     # Stay near center (-|lateralError|), rewards going fast (+0.1*velocity) and penalizes collisions (-10)
     def computeReward(self, velocity, lateralError, leftBound, rightBound, collision):
