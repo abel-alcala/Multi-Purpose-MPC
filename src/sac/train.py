@@ -75,9 +75,9 @@ def train(useObstacles=True, initCheckpoint=None):
     stateProcessor = StateProcessor()
     actionProcessor = ActionProcessor()
 
-    config = SACConfig(state_dim=7, action_dim=2, device='cpu')
+    config = SACConfig(state_dim=stateProcessor.state_dim, action_dim=actionProcessor.action_dim, device='cpu')
     agent = SACAgent(config)
-    buffer = ReplayBuffer(state_dim=7, action_dim=2, capacity=bufferCapacity)
+    buffer = ReplayBuffer(state_dim=stateProcessor.state_dim, action_dim=actionProcessor.action_dim, capacity=bufferCapacity)
 
     # Load starting checkpoint before deleting old files so it isn't wiped
     if initCheckpoint is not None:
