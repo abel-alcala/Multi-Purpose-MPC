@@ -28,7 +28,7 @@ def runEpisode(checkpointFile, pause=0.03, useObstacles=True):
         print(f"checkpoint not found: {path}")
         sys.exit(1)
 
-    agent = SACAgent(SACConfig(state_dim=5, action_dim=2, device='cpu'))
+    agent = SACAgent(SACConfig(state_dim=7, action_dim=2, device='cpu'))
     agent.load(path)
 
     stateProcessor = StateProcessor()

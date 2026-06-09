@@ -94,25 +94,72 @@ class TrackingEnv:
                 Obstacle(cx=0.0, cy=0.0, radius=0.05),
                 Obstacle(cx=-0.8, cy=-0.5, radius=0.08),
                 Obstacle(cx=-0.7, cy=-1.5, radius=0.05),
-                Obstacle(cx=-0.3, cy=-1.0, radius=0.08),
+                Obstacle(cx=-0.3, cy=-1.0, radius=0.05),
                 Obstacle(cx=0.27, cy=-1.0, radius=0.05),
                 Obstacle(cx=0.78, cy=-1.47, radius=0.05),
-                Obstacle(cx=0.73, cy=-0.9, radius=0.07),
-                Obstacle(cx=1.2, cy=0.0, radius=0.08),
-                Obstacle(cx=0.67, cy=-0.05, radius=0.06)]
+                Obstacle(cx=0.73, cy=-0.9, radius=0.05),
+                Obstacle(cx=1.2, cy=0.0, radius=0.05),
+                Obstacle(cx=0.67, cy=-0.05, radius=0.05)]
             self._map.add_obstacles(self._obstacles)
+
+        # Precompute the obstacle-aware corridor for every waypoint, the same way the MPC agent does.
+        # _refCenter[i] is the lateral position the car should target at waypoint i to drive around obstacles.
+        # _ubDyn and _lbDyn are the left and right corridor walls at each waypoint.
+        # When obstacles are off, the corridor matches the static drivable area so the reward
+        # and observation code works the same in both the obstacle and no-obstacle training phases.
+        self._buildCorridor()
 
         # Define action and observation spaces
         self.action_space = spaces.Box(
             low=np.array([0.0, -self.deltaMax], dtype=np.float32),
             high=np.array([self.vMax, self.deltaMax], dtype=np.float32))
+        # 7D observation: [devFromRef, headingError, kappaAhead, lastVelocity, clearance, upcomingRefShift, upcomingMinWidth]
         self.observation_space = spaces.Box(
-            low=np.array([-np.inf, -np.pi, -np.inf, 0.0, -np.inf], dtype=np.float32),
-            high=np.array([np.inf, np.pi, np.inf, self.vMax, np.inf], dtype=np.float32))
+            low=np.array([-np.inf, -np.pi, -np.inf, 0.0, -np.inf, -np.inf, 0.0], dtype=np.float32),
+            high=np.array([np.inf, np.pi, np.inf, self.vMax, np.inf, np.inf, np.inf], dtype=np.float32))
 
         self.car = None
         self._stepCount = 0
         self._lastVelocity = 0.0
+        self._lastKappaAhead = 0.0
+
+    # Builds the obstacle-aware corridor used by the reward function and observations.
+    def _buildCorridor(self):
+        nWaypoints = self.referencePath.n_waypoints
+        staticUb = np.array([wp.ub for wp in self.referencePath.waypoints])
+        staticLb = np.array([wp.lb for wp in self.referencePath.waypoints])
+
+        if not self._useObstacles:
+            # Without obstacles the corridor matches the static drivable area and the reference stays at the centerline.
+            self._ubDyn = staticUb
+            self._lbDyn = staticLb
+            self._refCenter = np.zeros(nWaypoints)
+            return
+
+        # Use the same widest-gap corridor solver the MPC uses. carWidth/4 as the safety margin
+        # has been confirmed to keep all corridors feasible with 0 infeasible waypoints.
+        sm = self.carWidth / 4.0
+        ub, lb, _ = self.referencePath.update_path_constraints(0, nWaypoints, 2 * sm, sm)
+        ub = np.asarray(ub, dtype=float)
+        lb = np.asarray(lb, dtype=float)
+
+        # If a waypoint has no valid corridor (ub <= lb), fall back to the static track bounds
+        # so the agent is never placed in a position it cannot escape regardless of steering.
+        infeasible = ub <= lb
+        ub[infeasible] = staticUb[infeasible]
+        lb[infeasible] = staticLb[infeasible]
+
+        self._ubDyn = ub
+        self._lbDyn = lb
+        self._refCenter = (ub + lb) / 2.0
+        self._refCenter[infeasible] = 0.0
+
+        # Diagnostic so corridor validity is visible before training.
+        widths = self._ubDyn - self._lbDyn
+        print(f"[corridor] min width {widths.min():.4f} m (car {self.carWidth} m) | "
+              f"infeasible {int(infeasible.sum())}/{nWaypoints} | "
+              f"narrower-than-car {int((widths < self.carWidth).sum())} | "
+              f"refCenter range [{self._refCenter.min():.4f}, {self._refCenter.max():.4f}] m")
 
     def reset(self, seed=None):
         if seed is not None:
@@ -121,6 +168,7 @@ class TrackingEnv:
         self.car = BicycleModel(self.referencePath, self.carLength, self.carWidth, self.Ts)
         self._stepCount = 0
         self._lastVelocity = 0.0
+        self._lastKappaAhead = 0.0
         return self.getObs(), {}
 
     def step(self, action):
@@ -133,8 +181,8 @@ class TrackingEnv:
 
         lapComplete = bool(self.car.s >= self.referencePath.length)
 
-        # get_current_waypoint indexes into the waypoint array via s; skip if lap is done
-        # to avoid an out-of-bounds access when s has passed the end of the track.
+        # Skip get_current_waypoint when the lap is complete to avoid an out-of-bounds
+        # array access when s has moved past the last waypoint index.
         if not lapComplete:
             self.car.get_current_waypoint()
             self.car.spatial_state = self.car.t2s(self.car.current_waypoint, self.car.temporal_state)
@@ -149,7 +197,9 @@ class TrackingEnv:
         offTrack = bool(lateralError < leftBound or lateralError > rightBound)
         collision = offTrack or self._hitObstacle()
         obs = self.getObs()
-        reward = self.computeReward(velocity, lateralError, leftBound, rightBound, collision)
+        # reward deviation from the obstacle-aware reference, not the raw centerline
+        refCenter = float(self._refCenter[self.car.wp_id])
+        reward = self.computeReward(velocity, lateralError, refCenter, collision)
         terminated = collision or lapComplete
         truncated = self._stepCount >= self.maxSteps
 
@@ -193,27 +243,53 @@ class TrackingEnv:
         lateralError = self.car.spatial_state.e_y
         headingError = self.car.spatial_state.e_psi
         numWaypoints = self.referencePath.n_waypoints
+        wpId = self.car.wp_id
+        K = self.nWaypointsAhead
+        circular = self._config['circular']
 
         # Average curvature over the next N waypoints so agent can anticipate turns, not just react to them
         kappas = []
-        for i in range(1, self.nWaypointsAhead + 1):
-            waypointIdx = self.car.wp_id + i
-            if waypointIdx >= numWaypoints:
-                waypointIdx = waypointIdx % numWaypoints if self._config['circular'] else numWaypoints - 1
-            kappas.append(self.referencePath.waypoints[waypointIdx].kappa)
+        for i in range(1, K + 1):
+            idx = self.car.wp_id + i
+            if idx >= numWaypoints:
+                idx = idx % numWaypoints if circular else numWaypoints - 1
+            kappas.append(self.referencePath.waypoints[idx].kappa)
         kappaAhead = float(np.mean(kappas))
-        leftBound = self.car.current_waypoint.lb
-        rightBound = self.car.current_waypoint.ub
-        clearance = min(rightBound - lateralError, lateralError - leftBound)  # distance to the closer boundary
+        self._lastKappaAhead = kappaAhead  # cached for use in computeReward
 
-        return np.array([
-    lateralError,   # how far left/right from centerline
-    headingError,   # how misaligned with path tangent
-    kappaAhead,     # upcoming path curvature
-    self._lastVelocity,   # previous commanded speed
-    clearance,      # distance to nearest track boundary
-], dtype=np.float32)
+        # devFromRef measures how far the car is from the obstacle-avoiding target line, not the raw centerline.
+        # clearance measures the gap to the nearer corridor wall.
+        # When obstacles are off, both values reduce to standard track-centered equivalents.
+        refCenter = float(self._refCenter[wpId])
+        ubDyn = float(self._ubDyn[wpId])
+        lbDyn = float(self._lbDyn[wpId])
+        devFromRef = lateralError - refCenter
+        clearance = min(ubDyn - lateralError, lateralError - lbDyn)
 
-    # Stay near center (-|lateralError|), rewards going fast (+0.1*velocity) and penalizes collisions (-10)
-    def computeReward(self, velocity, lateralError, leftBound, rightBound, collision):
-        return -abs(lateralError) - 10.0 * float(collision) + 0.1 * velocity
+        # How much the obstacle-avoiding target line will shift K waypoints from now.
+        # Positive means the reference moves right, negative means left.
+        # This gives the agent advance warning before it needs to steer around an obstacle,
+        # similar to how MPC uses a prediction horizon. Returns zero when obstacles are off.
+        futureIdx = (wpId + K) % numWaypoints if circular else min(wpId + K, numWaypoints - 1)
+        upcomingRefShift = float(self._refCenter[futureIdx] - refCenter)
+
+        # Minimum corridor width over the next K waypoints, warning the agent of a narrow section ahead.
+        futureWidths = []
+        for i in range(1, K + 1):
+            idx = wpId + i
+            if idx >= numWaypoints:
+                idx = idx % numWaypoints if circular else numWaypoints - 1
+            futureWidths.append(self._ubDyn[idx] - self._lbDyn[idx])
+        upcomingMinWidth = float(min(futureWidths))
+
+        return np.array([devFromRef, headingError, kappaAhead, self._lastVelocity, clearance,
+                         upcomingRefShift, upcomingMinWidth], dtype=np.float32)
+
+    # Reward = -|deviation from obstacle-avoiding reference| + 0.1*velocity - 10*collision - curvature penalty.
+    # The curvature penalty kicks in when the agent goes faster than the safe cornering speed
+    # v_safe = sqrt(ay_max / |kappa|), which is the same formula MPC uses for its lateral acceleration limit.
+    # The penalty is zero at or below v_safe so the agent is never penalized for driving at a safe speed.
+    def computeReward(self, velocity, lateralError, refCenter, collision):
+        safeSpeed = min(self.vMax, np.sqrt(4.0 / max(abs(self._lastKappaAhead), 0.1)))
+        curvaturePenalty = 0.1 * max(0.0, velocity - safeSpeed)
+        return -abs(lateralError - refCenter) - 10.0 * float(collision) + 0.1 * velocity - curvaturePenalty

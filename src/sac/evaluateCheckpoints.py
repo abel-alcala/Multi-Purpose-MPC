@@ -43,7 +43,7 @@ def main(useObstacles=True):
     env = TrackingEnv(simMode='Sim_Track', useObstacles=useObstacles)
     stateProcessor = StateProcessor()
     actionProcessor = ActionProcessor()
-    config = SACConfig(state_dim=5, action_dim=2, device='cpu')
+    config = SACConfig(state_dim=7, action_dim=2, device='cpu')
 
     results = []
 
