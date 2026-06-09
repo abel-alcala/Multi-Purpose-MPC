@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from gymnasium import spaces
-from lidar_model import LidarModel
+from lidar_model import LidarModel, OptimizedLidarModel
 from map import Map, Obstacle
 from reference_path import ReferencePath
 from spatial_bicycle_models import BicycleModel
@@ -70,7 +70,7 @@ class TrackingEnv:
         self.carLength = config['carLength']
         self.carWidth = config['carWidth']
         self.Ts = config['Ts']
-        self.lidarModel = LidarModel(180, 2, 10) # 180 degrees, 2 meters range, 10 points
+        self.lidarModel = OptimizedLidarModel(120, 2, 10) # 120 degrees, 0.5 meters range, 10 points
 
         # Build the map
         self._map = Map(
