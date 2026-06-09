@@ -17,7 +17,7 @@ from action import ActionProcessor
 from state import StateNormalizationConfig, StateProcessor
 
 # training hyperparameters
-totalSteps = 900000
+totalSteps = 500000
 warmupSteps = 5000  # random actions before the first gradient update
 batchSize = 256
 evalFreq = 10000  # run an evaluation every N steps
