@@ -8,6 +8,7 @@ SCAN = '#5DADE2'
 
 
 class LidarModel:
+
     """
     Lidar Model
     """
