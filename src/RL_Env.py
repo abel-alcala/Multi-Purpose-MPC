@@ -1,195 +1,233 @@
-from dataclasses import dataclass
 import numpy as np
+import matplotlib.pyplot as plt
+from gymnasium import spaces
+from lidar_model import LidarModel
+from map import Map, Obstacle
+from reference_path import ReferencePath
+from spatial_bicycle_models import BicycleModel
 
-"""
-This module provides classes for processing states into digestible formats for the SAC agent.
-"""
+# The map and reference path are built once in __init__ and shared across all attempt to not rebuild each time
+simSettings = {
+    'Sim_Track': {
+        'mapFile': 'maps/sim_map.png',
+        'mapOrigin': [-1, -2],
+        'mapResolution': 0.005,
+        'wpX': [-0.75, -0.25, -0.25, 0.25, 0.25, 1.25, 1.25, 0.75, 0.75, 1.25, 1.25, -0.75, -0.75, -0.25],
+        'wpY': [-1.5, -1.5, -0.5, -0.5, -1.5, -1.5, -1, -1, -0.5, -0.5, 0, 0, -1.5, -1.5],
+        'pathResolution': 0.05,
+        'smoothingDistance': 5,
+        'maxWidth': 0.23,
+        'circular': True,
+        'carLength': 0.12,
+        'carWidth': 0.06,
+        'Ts': 0.05,
+        'useObstacles': True,
+    },
+    'Real_Track': {
+        'mapFile': 'maps/real_map.png',
+        'mapOrigin': (-30.0, -24.0),
+        'mapResolution': 0.06,
+        'wpX': [-9.169, 11.9, 7.3, -6.95],
+        'wpY': [-15.678, 10.9, 14.5, -3.31],
+        'pathResolution': 0.20,
+        'smoothingDistance': 5,
+        'maxWidth': 1.50,
+        'circular': False,
+        'carLength': 0.30,
+        'carWidth': 0.20,
+        'Ts': 0.05,
+        'useObstacles': False,
+    },
+}
+
+# car action variables
+maxVelocity = 1.0  # car velocity capped to [0, 1] m/s
+maxDelta = 0.66  # steering angle clipped to [-0.66, 0.66] rad
 
 
-@dataclass(frozen=True)
-class StateNormalizationConfig:
-    """
-    Normalization constants for TrackingEnv observations.
+# Wraps the bicycle model simulation so a RL agent can interact with it
+# The agent calls reset() to start a new lap and step(action) to move the car forward one timestep
+class TrackingEnv:
+    metadata = {'render_modes': ['human']}
 
-    Raw observation:
-        [
-            lateralError,
-            headingError,
-            kappaAhead,
-            lastVelocity,
-            clearance,
-            lidar_0,
-            lidar_1,
-            ...
-        ]
+    def __init__(self, simMode='Sim_Track', nWaypointsAhead=5, maxSteps=2000, renderMode=None,
+                 useObstacles=None):
+        if simMode not in simSettings:
+            raise ValueError(f"simMode must be 'Sim_Track' or 'Real_Track'")
 
-    Notes:
-        - headingError is bounded by [-pi, pi].
-        - lastVelocity is bounded by [0, 1].
-        - lidar ranges are bounded by [0, max_lidar_range].
-        - lateralError, kappaAhead, and clearance are clipped to practical ranges.
-    """
+        # Tracking Env configuration
+        config = simSettings[simMode]
+        self._config = config
+        self._useObstacles = config.get('useObstacles') if useObstacles is None else useObstacles
+        self.simMode = simMode
+        self.nWaypointsAhead = nWaypointsAhead
+        self.maxSteps = maxSteps
+        self.renderMode = renderMode
 
-    max_lateral_error: float = 1.5
-    max_abs_kappa: float = 10.0
-    max_clearance: float = 1.5
-    max_velocity: float = 1.0
+        # Car configuration
+        self.vMax = maxVelocity
+        self.deltaMax = maxDelta
+        self.carLength = config['carLength']
+        self.carWidth = config['carWidth']
+        self.Ts = config['Ts']
+        self.lidarModel = LidarModel(180, 2, 10) # 180 degrees, 2 meters range, 10 points
 
-    max_lidar_range: float = 2.0  # MUST MATCH TrackingEnv lidar range
-    num_lidar_measurements: int = 19  # MUST MATCH TrackingEnv lidar measurement count
-
-
-class StateProcessor:
-    """
-    Converts TrackingEnv raw observations into normalized observations
-    suitable for SAC neural networks.
-
-    Raw observation:
-        [
-            lateralError,
-            headingError,
-            kappaAhead,
-            lastVelocity,
-            clearance,
-            lidar_0,
-            lidar_1,
-            ...
-        ]
-
-    Normalized observation:
-        roughly in [-1, 1]^(5 + num_lidar_measurements)
-    """
-
-    BASE_STATE_DIM = 5
-
-    def __init__(self, config: StateNormalizationConfig = StateNormalizationConfig()):
-        self.config = config
-        self.base_state_dim = self.BASE_STATE_DIM
-        self.state_dim = self.base_state_dim + config.num_lidar_measurements
-
-    def validate_raw(self, obs: np.ndarray) -> None:
-        obs = np.asarray(obs, dtype=np.float32)
-
-        if obs.shape != (self.state_dim,):
-            raise ValueError(
-                f"Expected observation shape {(self.state_dim,)}, got {obs.shape}. "
-                f"Expected 5 base features + "
-                f"{self.config.num_lidar_measurements} lidar measurements."
-            )
-
-        if not np.all(np.isfinite(obs)):
-            raise ValueError(f"Observation contains non-finite values: {obs}")
-
-    def normalize(self, obs: np.ndarray) -> np.ndarray:
-        """
-        Normalize raw TrackingEnv observation to approximately [-1, 1]^state_dim.
-        """
-        obs = np.asarray(obs, dtype=np.float32)
-        self.validate_raw(obs)
-
-        lateral_error = obs[0]
-        heading_error = obs[1]
-        kappa_ahead = obs[2]
-        last_velocity = obs[3]
-        clearance = obs[4]
-        lidar_ranges = obs[5:]
-
-        c = self.config
-
-        lateral_error_norm = np.clip(
-            lateral_error / c.max_lateral_error,
-            -1.0,
-            1.0,
+        # Build the map
+        self._map = Map(
+            file_path=config['mapFile'],
+            origin=config['mapOrigin'],
+            resolution=config['mapResolution'],
         )
 
-        heading_error_norm = np.clip(
-            heading_error / np.pi,
-            -1.0,
-            1.0,
+        # Builds reference path before adding obstacles to not corrupt map
+        self.referencePath = ReferencePath(
+            self._map,
+            config['wpX'],
+            config['wpY'],
+            config['pathResolution'],
+            smoothing_distance=config['smoothingDistance'],
+            max_width=config['maxWidth'],
+            circular=config['circular']
         )
+        self.referencePath.compute_speed_profile(
+            {'a_min': -0.1, 'a_max': 0.5, 'v_min': 0.0, 'v_max': maxVelocity, 'ay_max': 4.0})
 
-        kappa_ahead_norm = np.clip(
-            kappa_ahead / c.max_abs_kappa,
-            -1.0,
-            1.0,
-        )
+        self._obstacles = []
+        if self._useObstacles:
+            self._obstacles = [
+                # TODO - Make obstacles configurable rather than hardcoded
+                Obstacle(cx=0.0, cy=0.0, radius=0.05),
+                Obstacle(cx=-0.8, cy=-0.5, radius=0.08),
+                Obstacle(cx=-0.7, cy=-1.5, radius=0.05),
+                Obstacle(cx=-0.3, cy=-1.0, radius=0.08),
+                Obstacle(cx=0.27, cy=-1.0, radius=0.05),
+                Obstacle(cx=0.78, cy=-1.47, radius=0.05),
+                Obstacle(cx=0.73, cy=-0.9, radius=0.07),
+                Obstacle(cx=1.2, cy=0.0, radius=0.08),
+                Obstacle(cx=0.67, cy=-0.05, radius=0.06)]
+            self._map.add_obstacles(self._obstacles)
 
-        last_velocity_clipped = np.clip(last_velocity, 0.0, c.max_velocity)
-        last_velocity_norm = 2.0 * (last_velocity_clipped / c.max_velocity) - 1.0
+        # Define action and observation spaces
+        self.action_space = spaces.Box(
+            low=np.array([0.0, -self.deltaMax], dtype=np.float32),
+            high=np.array([self.vMax, self.deltaMax], dtype=np.float32))
+        self.observation_space = spaces.Box(
+            low=np.array([-np.inf, -np.pi, -np.inf, 0.0, -np.inf], dtype=np.float32),
+            high=np.array([np.inf, np.pi, np.inf, self.vMax, np.inf], dtype=np.float32))
 
-        clearance_norm = np.clip(
-            clearance / c.max_clearance,
-            -1.0,
-            1.0,
-        )
+        self.car = None
+        self._stepCount = 0
+        self._lastVelocity = 0.0
 
-        # Lidar ranges:
-        #   0.0             -> -1.0  obstacle very close
-        #   max_lidar_range ->  1.0  no obstacle within max range
-        lidar_clipped = np.clip(lidar_ranges, 0.0, c.max_lidar_range)
-        lidar_norm = 2.0 * (lidar_clipped / c.max_lidar_range) - 1.0
+    def reset(self, seed=None):
+        if seed is not None:
+            self.action_space.seed(seed)
 
-        base_normalized = np.array(
-            [
-                lateral_error_norm,
-                heading_error_norm,
-                kappa_ahead_norm,
-                last_velocity_norm,
-                clearance_norm,
-            ],
-            dtype=np.float32,
-        )
+        self.car = BicycleModel(self.referencePath, self.carLength, self.carWidth, self.Ts)
+        self._stepCount = 0
+        self._lastVelocity = 0.0
+        return self.getObs(), {}
 
-        normalized = np.concatenate(
-            [base_normalized, lidar_norm.astype(np.float32)]
-        ).astype(np.float32)
+    def step(self, action):
+        if self.car is None:
+            raise RuntimeError("Call reset() before step()")
 
-        return normalized
+        velocity = float(np.clip(action[0], 0.0, self.vMax))
+        steeringAngle = float(np.clip(action[1], -self.deltaMax, self.deltaMax))
+        self.car.drive(np.array([velocity, steeringAngle]))
 
-    def normalize_batch(self, obs_batch: np.ndarray) -> np.ndarray:
-        """
-        Normalize a batch of observations.
+        lapComplete = bool(self.car.s >= self.referencePath.length)
 
-        Expected shape:
-            (batch_size, state_dim)
-        """
-        obs_batch = np.asarray(obs_batch, dtype=np.float32)
+        # get_current_waypoint indexes into the waypoint array via s; skip if lap is done
+        # to avoid an out-of-bounds access when s has passed the end of the track.
+        if not lapComplete:
+            self.car.get_current_waypoint()
+            self.car.spatial_state = self.car.t2s(self.car.current_waypoint, self.car.temporal_state)
+        self._lastVelocity = velocity
+        self._stepCount += 1
 
-        if obs_batch.ndim != 2 or obs_batch.shape[1] != self.state_dim:
-            raise ValueError(
-                f"Expected observation batch shape (batch_size, {self.state_dim}), "
-                f"got {obs_batch.shape}"
-            )
+        lateralError = self.car.spatial_state.e_y
+        leftBound = self.car.current_waypoint.lb
+        rightBound = self.car.current_waypoint.ub
 
-        return np.stack([self.normalize(obs) for obs in obs_batch]).astype(np.float32)
+        # collision is either leaving the track or hitting one of the obstacles
+        offTrack = bool(lateralError < leftBound or lateralError > rightBound)
+        collision = offTrack or self._hitObstacle()
+        obs = self.getObs()
+        reward = self.computeReward(velocity, lateralError, leftBound, rightBound, collision)
+        terminated = collision or lapComplete
+        truncated = self._stepCount >= self.maxSteps
 
+        info = {
+            's': self.car.s, # distance traveled along path
+            'wp_id': self.car.wp_id, # current waypoint index
+            'e_y': lateralError, # lateral deviation from centerline
+            'collision': collision,
+            'lap_complete': lapComplete
+        }
 
-if __name__ == "__main__":
-    processor = StateProcessor()
+        if self.renderMode == 'human':
+            self.render()
 
-    mpc_obs = np.array(
-        [
-            0.05,   # lateralError
-            0.10,   # headingError
-            1.50,   # kappaAhead
-            0.40,   # lastVelocity
-            0.12,   # clearance
-        ],
-        dtype=np.float32,
-    )
+        return obs, reward, terminated, truncated, info
 
-    lidar_obs = np.linspace(
-        0.0,
-        processor.config.max_lidar_range,
-        processor.config.num_lidar_measurements,
-        dtype=np.float32,
-    )
+    def render(self):
+        self.referencePath.show()
+        self.car.show()
+        plt.title(f'RL Environment  |  s={self.car.s:.2f}/{self.referencePath.length:.2f} m  |  lateralError={self.car.spatial_state.e_y:.3f} m')
+        plt.axis('off')
+        plt.pause(0.001)  # runs faster
+        # plt.pause(0.1) # slo mo
 
-    raw_obs = np.concatenate([mpc_obs, lidar_obs]).astype(np.float32)
-    normalized_obs = processor.normalize(raw_obs)
+    def close(self):
+        plt.close('all')
 
-    print("Raw observation shape:        ", raw_obs.shape)
-    print("Normalized observation shape: ", normalized_obs.shape)
-    print("State dim:                    ", processor.state_dim)
-    print("Raw observation:              ", raw_obs)
-    print("Normalized observation:       ", normalized_obs)
+    # True if the car body overlaps any obstacle disk (car treated as a disk of half its width)
+    def _hitObstacle(self):
+        if not self._obstacles:
+            return False
+        carX = self.car.temporal_state.x
+        carY = self.car.temporal_state.y
+        halfCar = self.carWidth / 2.0
+        for obs in self._obstacles:
+            if np.hypot(carX - obs.cx, carY - obs.cy) < obs.radius + halfCar:
+                return True
+        return False
+
+    def getObs(self):
+        lateralError = self.car.spatial_state.e_y
+        headingError = self.car.spatial_state.e_psi
+        numWaypoints = self.referencePath.n_waypoints
+
+        # MPC relevant features. Pushes the agent to stay near the centerline and go fast.
+        # Average curvature over the next N waypoints so agent can anticipate turns, not just react to them
+        kappas = []
+        for i in range(1, self.nWaypointsAhead + 1):
+            waypointIdx = self.car.wp_id + i
+            if waypointIdx >= numWaypoints:
+                waypointIdx = waypointIdx % numWaypoints if self._config['circular'] else numWaypoints - 1
+            kappas.append(self.referencePath.waypoints[waypointIdx].kappa)
+        kappaAhead = float(np.mean(kappas))
+        leftBound = self.car.current_waypoint.lb
+        rightBound = self.car.current_waypoint.ub
+        clearance = min(rightBound - lateralError, lateralError - leftBound)  # distance to the closer boundary
+
+        mpc_obs =  np.array([
+            lateralError,   # how far left/right from centerline
+            headingError,   # how misaligned with path tangent
+            kappaAhead,     # upcoming path curvature
+            self._lastVelocity,   # previous commanded speed
+            clearance,      # distance to nearest track boundary
+        ], dtype=np.float32)
+
+        # LiDAR relevant features. Provides information about the environment around the car.
+        self.lidarModel.scan(self.car.temporal_state, self._map)
+        lidarRanges = self.lidarModel.measurements[1, :]
+
+        return np.concatenate([mpc_obs, lidarRanges]).astype(np.float32)
+
+        
+
+    # Stay near center (-|lateralError|), rewards going fast (+0.1*velocity) and penalizes collisions (-10)
+    def computeReward(self, velocity, lateralError, leftBound, rightBound, collision):
+        return -abs(lateralError) - 10.0 * float(collision) + 0.1 * velocity
