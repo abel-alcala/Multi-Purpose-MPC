@@ -14,7 +14,7 @@ from RL_Env import TrackingEnv
 from agent import SACAgent, SACConfig
 from replay_buffer import ReplayBuffer
 from action import ActionProcessor
-from state import StateProcessor
+from state import StateNormalizationConfig, StateProcessor
 
 # training hyperparameters
 totalSteps = 900000
@@ -72,7 +72,12 @@ def evaluate(env, agent, stateProcessor, actionProcessor, nEpisodes):
 def train(useObstacles=True, initCheckpoint=None):
     os.makedirs(checkpointDir, exist_ok=True)
 
-    stateProcessor = StateProcessor()
+    env = TrackingEnv(simMode='Sim_Track', useObstacles=useObstacles)
+    # A separate environment is used for evaluation so evaluation episodes never affect the training state
+    evalEnv = TrackingEnv(simMode='Sim_Track', useObstacles=useObstacles)
+
+    stateProcessorConfig = StateNormalizationConfig(num_lidar_measurements=env.lidarModel.n_measurements)
+    stateProcessor = StateProcessor(config=stateProcessorConfig)
     actionProcessor = ActionProcessor()
 
     config = SACConfig(state_dim=stateProcessor.state_dim, action_dim=actionProcessor.action_dim, device='cpu')
@@ -87,10 +92,6 @@ def train(useObstacles=True, initCheckpoint=None):
     # Clear numbered checkpoints from a previous run so the plot only covers the current run
     for old in glob.glob(os.path.join(checkpointDir, 'sac_[0-9]*.pt')):
         os.remove(old)
-
-    env = TrackingEnv(simMode='Sim_Track', useObstacles=useObstacles)
-    # A separate environment is used for evaluation so evaluation episodes never affect the training state
-    evalEnv = TrackingEnv(simMode='Sim_Track', useObstacles=useObstacles)
 
     obs, _ = env.reset()
     normState = stateProcessor.normalize(obs)
