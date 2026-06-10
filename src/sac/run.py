@@ -1,9 +1,10 @@
 import argparse
 import os
 import sys
+import torch
 
 _sacDir = os.path.dirname(os.path.abspath(__file__))
-_srcDir = os.path.join(_sacDir, '..')
+_srcDir = os.path.join(_sacDir, "..")
 sys.path.insert(0, _srcDir)
 sys.path.insert(0, _sacDir)
 os.chdir(_srcDir)
@@ -19,15 +20,28 @@ import showAgent
 #   python run.py --viz-only          skip training and just visualize saved checkpoints (to not have to rerun training each time)
 #   python run.py --slow --viz-only   agent visualization runs slower using saved checkpoints
 
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--no-obstacles', action='store_true', help='run without obstacles on the track')
-    parser.add_argument('--viz-only', action='store_true', help='skip training and only visualize')
-    parser.add_argument('--checkpoint', default='sac_final.pt', help='checkpoint to visualize')
-    parser.add_argument('--slow', action='store_true', help='slower playback during visualization')
+    parser.add_argument(
+        "--no-obstacles", action="store_true", help="run without obstacles on the track"
+    )
+    parser.add_argument(
+        "--viz-only", action="store_true", help="skip training and only visualize"
+    )
+    parser.add_argument(
+        "--checkpoint", default="sac_final.pt", help="checkpoint to visualize"
+    )
+    parser.add_argument(
+        "--slow", action="store_true", help="slower playback during visualization"
+    )
     args = parser.parse_args()
 
     useObstacles = not args.no_obstacles
+
+    torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(torch_device)
+    print(f"Torch using {torch.get_default_device()} for training")
 
     # train, evaluate every checkpoint, then save the curves (without blocking on them)
     if not args.viz_only:
@@ -40,5 +54,6 @@ def main():
     showAgent.runEpisode(args.checkpoint, pause, useObstacles)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
+
