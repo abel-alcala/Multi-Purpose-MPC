@@ -155,84 +155,33 @@ class OptimizedLidarModel(LidarModel):
     def __init__(self, FoV, range, resolution):
         super().__init__(FoV, range, resolution)
 
-    def _ray_circle_intersection(self, origin, direction, center, radius):
-        """
-        Ray:
-            p(t) = origin + t * direction, t >= 0
-
-        Circle:
-            ||p(t) - center||^2 = radius^2
-
-        Returns:
-            nearest positive intersection distance t, or None.
-        """
-        oc = origin - center
-
-        # direction is assumed normalized, so a = dot(direction, direction) = 1.
-        b = 2.0 * np.dot(oc, direction)
-        c = np.dot(oc, oc) - radius * radius
-
-        discriminant = b * b - 4.0 * c
-
-        # no intersection
-        if discriminant < 0.0:
-            return None
-
-        # calculate intersection distances
-        sqrt_disc = math.sqrt(discriminant)
-
-        i1 = (-b - sqrt_disc) / 2.0
-        i2 = (-b + sqrt_disc) / 2.0
-
-        valid = []
-
-        if 0.0 <= i1 <= self.range:
-            valid.append(i1)
-
-        if 0.0 <= i2 <= self.range:
-            valid.append(i2)
-
-        if not valid:
-            return None
-
-        return min(valid)
-
     def scan(self, car: TemporalState, map: Map):
         """
-        Fast scan method for the lidar sensor. Only calculates if a beam hits an obstacle.
+        Fast scan method for the lidar sensor. Ray marches lidar beams rather than calculating all pixels.
         """
         # start = time.time()
         self.measurements[1, :] = self.range
 
-        origin = np.array([car.x, car.y], dtype=np.float32)
+        x0, y0 = map.w2m(car.x, car.y)
 
-        for beam_id, relative_angle in enumerate(self.measurements[0, :]):
-            beam_angle = car.psi + relative_angle
+        step_px = 1
+        max_steps = int(self.range / map.resolution)
 
-            direction = np.array(
-                [math.cos(beam_angle), math.sin(beam_angle)],
-                dtype=np.float32,
-            )
+        for beam_id, rel_angle in enumerate(self.measurements[0, :]):
+            theta = car.psi + rel_angle
+            dx = np.cos(theta)
+            dy = np.sin(theta)
 
-            nearest = self.range
+            for step in range(max_steps):
+                px = int(round(x0 + step * step_px * dx))
+                py = int(round(y0 + step * step_px * dy))
 
-            for obs in map.obstacles:
-                center = np.array([obs.cx, obs.cy], dtype=np.float32)
+                if px < 0 or px >= map.width or py < 0 or py >= map.height:
+                    break
 
-                # Inflate obstacle by car radius if desired.
-                inflated_radius = obs.radius  # + car.safety_margin
+                if map.data[py, px] == 0:
+                    self.measurements[1, beam_id] = step * map.resolution
+                    break
 
-                hit_distance = self._ray_circle_intersection(
-                    origin,
-                    direction,
-                    center,
-                    inflated_radius,
-                )
-
-                if hit_distance is not None and hit_distance < nearest:
-                    nearest = hit_distance
-
-            self.measurements[1, beam_id] = nearest
-        
         # end = time.time()
         # print('Time elapsed: ', end - start)

@@ -70,7 +70,7 @@ class TrackingEnv:
         self.carLength = config['carLength']
         self.carWidth = config['carWidth']
         self.Ts = config['Ts']
-        self.lidarModel = OptimizedLidarModel(120, 2, 10) # 120 degrees, 0.5 meters range, 10 points
+        self.lidarModel = OptimizedLidarModel(120, 1, 10) # 120 degrees, 0.5 meters range, 10 points
 
         # Build the map
         self._map = Map(
@@ -126,6 +126,7 @@ class TrackingEnv:
         self.car = BicycleModel(self.referencePath, self.carLength, self.carWidth, self.Ts)
         self._stepCount = 0
         self._lastVelocity = 0.0
+        self._lastS = self.car.s
         return self.getObs(), {}
 
     def step(self, action):
@@ -154,7 +155,7 @@ class TrackingEnv:
         offTrack = bool(lateralError < leftBound or lateralError > rightBound)
         collision = offTrack or self._hitObstacle()
         obs = self.getObs()
-        reward = self.computeReward(velocity, lateralError, leftBound, rightBound, collision)
+        reward = self.computeReward(velocity, lateralError, self.car.spatial_state.e_psi, collision, self.car.s - self._lastS)
         terminated = collision or lapComplete
         truncated = self._stepCount >= self.maxSteps
 
@@ -176,6 +177,7 @@ class TrackingEnv:
         self.car.show()
         plt.title(f'RL Environment  |  s={self.car.s:.2f}/{self.referencePath.length:.2f} m  |  lateralError={self.car.spatial_state.e_y:.3f} m')
         plt.axis('off')
+        self.lidarModel.plot_scan(self.car.temporal_state)
         plt.pause(0.001)  # runs faster
         # plt.pause(0.1) # slo mo
 
@@ -222,12 +224,25 @@ class TrackingEnv:
 
         # LiDAR relevant features. Provides information about the environment around the car.
         self.lidarModel.scan(self.car.temporal_state, self._map)
+        
         lidarRanges = self.lidarModel.measurements[1, :]
 
         return np.concatenate([mpc_obs, lidarRanges]).astype(np.float32)
-
-        
+    
 
     # Stay near center (-|lateralError|), rewards going fast (+0.1*velocity) and penalizes collisions (-10)
-    def computeReward(self, velocity, lateralError, leftBound, rightBound, collision):
-        return -abs(lateralError) - 10.0 * float(collision) + 0.1 * velocity
+    def computeReward(self, velocity, lateralError, headingError, collision, progress):
+
+        headingE_norm = abs(headingError) / np.pi
+
+        reward = 0
+        reward -= abs(lateralError)  # stay near center
+        reward -= abs(headingE_norm)  # stay aligned with path
+        reward -= 10.0 * float(collision)  # penalize collisions
+        # reward += 0.5 * velocity  # reward going fast
+        if progress > 0.1:
+            reward += 2.5 * progress  # reward making progress
+        else:
+            reward -= 0.5 * progress  # penalize not making progress
+        
+        return reward
