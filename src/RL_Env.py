@@ -316,7 +316,7 @@ class TrackingEnv:
         heading_error_norm = abs(headingError) / np.pi
 
         # Main objective: move forward along the track.
-        progress_reward = 20.0 * max(progress, 0.0)
+        progress_reward = 5.0 * max(progress, 0.0)
 
         # Penalize moving backward or failing to make progress.
         reverse_penalty = -5.0 * min(progress, 0.0)
@@ -326,7 +326,20 @@ class TrackingEnv:
         heading_penalty = -0.5 * heading_error_norm
 
         # Encourage speed mildly, but do not let speed dominate safety.
-        speed_reward = 0.25 * velocity
+        speed_reward = 0.5 * velocity
+
+        smooth_accel = 0.1
+        accel = abs(velocity - self._lastVelocity)
+        if accel > smooth_accel:
+            accel_penalty = -2 * abs(velocity - self._lastVelocity), 0.0
+        else:
+            accel_penalty = 0.0
+
+        useful_speed = 0.15
+        if velocity < useful_speed:
+            stop_penalty = -10.0
+        else:
+            stop_penalty = 0.0
 
         # Obstacle proximity penalty from lidar.
         # obstacle_penalty = 0.0
@@ -347,6 +360,8 @@ class TrackingEnv:
             progress_reward
             + reverse_penalty
             + speed_reward
+            + accel_penalty
+            + stop_penalty
             + lateral_penalty
             + heading_penalty
             # + obstacle_penalty
