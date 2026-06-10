@@ -155,7 +155,7 @@ class TrackingEnv:
         offTrack = bool(lateralError < leftBound or lateralError > rightBound)
         collision = offTrack or self._hitObstacle()
         obs = self.getObs()
-        reward = self.computeReward(velocity, lateralError, self.car.spatial_state.e_psi, collision, self.car.s - self._lastS)
+        reward = self.computeReward(velocity, lateralError, self.car.spatial_state.e_psi, collision, self.car.s - self._lastS, self.lidarModel.measurements[1,:], lapComplete)
         terminated = collision or lapComplete
         truncated = self._stepCount >= self.maxSteps
 
@@ -231,18 +231,53 @@ class TrackingEnv:
     
 
     # Stay near center (-|lateralError|), rewards going fast (+0.1*velocity) and penalizes collisions (-10)
-    def computeReward(self, velocity, lateralError, headingError, collision, progress):
+    def computeReward(
+        self,
+        velocity,
+        lateralError,
+        headingError,
+        collision,
+        progress,
+        lidarRanges=None,
+        lapComplete=False,
+    ):
+        heading_error_norm = abs(headingError) / np.pi
 
-        headingE_norm = abs(headingError) / np.pi
+        # Main objective: move forward along the track.
+        progress_reward = 20.0 * max(progress, 0.0)
 
-        reward = 0
-        reward -= abs(lateralError)  # stay near center
-        reward -= abs(headingE_norm)  # stay aligned with path
-        reward -= 10.0 * float(collision)  # penalize collisions
-        # reward += 0.5 * velocity  # reward going fast
-        if progress > 0.1:
-            reward += 2.5 * progress  # reward making progress
-        else:
-            reward -= 0.5 * progress  # penalize not making progress
-        
-        return reward
+        # Penalize moving backward or failing to make progress.
+        reverse_penalty = -5.0 * max(-progress, 0.0)
+
+        # Keep path tracking as a soft preference, not the main objective.
+        lateral_penalty = -0.5 * abs(lateralError)
+        heading_penalty = -0.5 * heading_error_norm
+
+        # Encourage speed mildly, but do not let speed dominate safety.
+        speed_reward = 0.1 * velocity
+
+        # Obstacle proximity penalty from lidar.
+        obstacle_penalty = 0.0
+        if lidarRanges is not None and len(lidarRanges) > 0:
+            nearest_obstacle = float(np.min(lidarRanges))
+            safe_distance = 0.25
+
+            if nearest_obstacle < safe_distance:
+                obstacle_penalty = -2.0 * (safe_distance - nearest_obstacle) / safe_distance
+
+        # Large terminal penalties/rewards.
+        collision_penalty = -25.0 * float(collision)
+        lap_bonus = 50.0 * float(lapComplete)
+
+        reward = (
+            progress_reward
+            + reverse_penalty
+            + speed_reward
+            + lateral_penalty
+            + heading_penalty
+            + obstacle_penalty
+            + collision_penalty
+            + lap_bonus
+        )
+
+        return float(reward)
