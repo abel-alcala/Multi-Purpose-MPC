@@ -16,7 +16,7 @@ os.chdir(_srcDir)
 from RL_Env import TrackingEnv
 from agent import SACAgent, SACConfig
 from action import ActionProcessor
-from state import StateProcessor
+from state import StateNormalizationConfig, StateProcessor
 
 checkpointDir = os.path.join(_sacDir, 'checkpoints')
 
@@ -28,12 +28,15 @@ def runEpisode(checkpointFile, pause=0.03, useObstacles=True):
         print(f"checkpoint not found: {path}")
         sys.exit(1)
 
-    agent = SACAgent(SACConfig(state_dim=7, action_dim=2, device='cpu'))
+    env = TrackingEnv(simMode='Sim_Track', renderMode='human', useObstacles=useObstacles)
+    
+    stateProcessorConfig = StateNormalizationConfig(num_lidar_measurements=env.lidarModel.n_measurements)
+    stateProcessor = StateProcessor(config=stateProcessorConfig)
+    actionProcessor = ActionProcessor()
+
+    agent = SACAgent(SACConfig(state_dim=stateProcessor.state_dim, action_dim=2, device='cpu'))
     agent.load(path)
 
-    stateProcessor = StateProcessor()
-    actionProcessor = ActionProcessor()
-    env = TrackingEnv(simMode='Sim_Track', renderMode='human', useObstacles=useObstacles)
 
     # slow down or speed up the render by overriding the pause length
     origPause = plt.pause

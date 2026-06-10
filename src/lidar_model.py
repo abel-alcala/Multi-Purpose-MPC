@@ -4,10 +4,13 @@ import numpy as np
 import math
 import time
 
+from spatial_bicycle_models import BicycleModel, TemporalState
+
 SCAN = '#5DADE2'
 
 
 class LidarModel:
+
     """
     Lidar Model
     """
@@ -146,3 +149,39 @@ if __name__ == '__main__':
 
     plt.axis('equal')
     plt.show()
+
+
+class OptimizedLidarModel(LidarModel):
+    def __init__(self, FoV, range, resolution):
+        super().__init__(FoV, range, resolution)
+
+    def scan(self, car: TemporalState, map: Map):
+        """
+        Fast scan method for the lidar sensor. Ray marches lidar beams rather than calculating all pixels.
+        """
+        # start = time.time()
+        self.measurements[1, :] = self.range
+
+        x0, y0 = map.w2m(car.x, car.y)
+
+        step_px = 1
+        max_steps = int(self.range / map.resolution)
+
+        for beam_id, rel_angle in enumerate(self.measurements[0, :]):
+            theta = car.psi + rel_angle
+            dx = np.cos(theta)
+            dy = np.sin(theta)
+
+            for step in range(max_steps):
+                px = int(round(x0 + step * step_px * dx))
+                py = int(round(y0 + step * step_px * dy))
+
+                if px < 0 or px >= map.width or py < 0 or py >= map.height:
+                    break
+
+                if map.data[py, px] == 0:
+                    self.measurements[1, beam_id] = step * map.resolution
+                    break
+
+        # end = time.time()
+        # print('Time elapsed: ', end - start)
